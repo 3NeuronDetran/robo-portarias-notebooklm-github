@@ -1,15 +1,14 @@
+import os
+import json
 import requests
 from bs4 import BeautifulSoup
 import io
 from datetime import datetime
 from urllib.parse import urljoin
 from PyPDF2 import PdfMerger, PdfReader
-
-# Bibliotecas do Google
-from google.colab import auth
+from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
-from google.auth import default
 import gspread
 
 # ================= CONFIGURAÇÕES GERAIS =================
@@ -17,11 +16,10 @@ URL_PLANILHA = 'https://docs.google.com/spreadsheets/d/1XNPM_2ToorZQauPg91mDhBBc
 NOME_ABA_CONTROLE = 'controle'
 NOME_ABA_LOG = 'Arquivos_baixados'
 BASE_URL = "https://mtsp.detran.sc.gov.br"
-TAMANHO_DO_GRUPO = 20  # Mantido igual ao original
-SIMULACAO = False      # Mantido igual ao original
+TAMANHO_DO_GRUPO = 20
+SIMULACAO = False
 
 # ================= CARDÁPIO DE ANOS =================
-# Preencha os IDs que faltam para 2025 e 2024
 CONFIGS_ANOS = [
     {
         "ano": "2026",
@@ -48,15 +46,20 @@ CONFIGS_ANOS = [
 # =======================================================
 
 def autenticar_servicos():
-    print("🔐 Autenticando serviços Google...")
-    auth.authenticate_user()
-    creds, _ = default()
+    print("🔐 Autenticando com Conta de Serviço via GitHub Secrets...")
+    credenciais_json = json.loads(os.environ['GCP_CREDENTIALS'])
+    
+    escopos = [
+        'https://www.googleapis.com/auth/drive',
+        'https://www.googleapis.com/auth/spreadsheets'
+    ]
+    
+    creds = service_account.Credentials.from_service_account_info(credenciais_json, scopes=escopos)
     drive_service = build('drive', 'v3', credentials=creds)
     gc = gspread.authorize(creds)
     return drive_service, gc
 
 def mover_para_arquivo_morto(service, origem_id, destino_id):
-    """Move arquivos antigos da pasta de agrupados para o arquivo morto (Função Original)"""
     print(f"📦 Arquivando lotes antigos...")
     query = f"'{origem_id}' in parents and trashed = false"
     results = service.files().list(q=query, fields="files(id, name, parents)").execute()
@@ -84,15 +87,13 @@ def executar_robo():
     except Exception as e:
         print(f"❌ Erro nas abas da planilha: {e}"); return
 
-    # 1. Obter Log Único de arquivos já baixados
-    log_baixados = ws_log.col_values(2)[1:] # Coluna B
+    log_baixados = ws_log.col_values(2)[1:]
     set_ja_processados = set(log_baixados)
     
     registros_log_geral = []
     nomes_unificados_geral = []
     headers = {'User-Agent': 'Mozilla/5.0'}
 
-    # O LAÇO MÁGICO QUE RODA OS 3 ANOS
     for config in CONFIGS_ANOS:
         print(f"\n==================================================")
         print(f"🌍 Escaneando site do ano: {config['ano']} por novidades...")
@@ -100,7 +101,6 @@ def executar_robo():
         
         novos_para_baixar = []
         
-        # 2. Varredura Web
         try:
             res = requests.get(config['url'], headers=headers, timeout=30)
             soup = BeautifulSoup(res.text, 'html.parser')
@@ -117,13 +117,11 @@ def executar_robo():
         print(f"📊 Encontrados {len(novos_para_baixar)} novos arquivos em {config['ano']}.")
         
         if not novos_para_baixar:
-            continue # Pula para o próximo ano se não tiver arquivo novo
+            continue
 
-        # 3. Limpeza (Mantida idêntica ao código original)
         if not SIMULACAO:
             mover_para_arquivo_morto(drive_service, config['pasta_agrupados'], config['pasta_morto'])
 
-        # 4. Loop de Download e Agrupamento
         for i in range(0, len(novos_para_baixar), TAMANHO_DO_GRUPO):
             lote = novos_para_baixar[i : i + TAMANHO_DO_GRUPO]
             num_lote = (i // TAMANHO_DO_GRUPO) + 1
@@ -138,17 +136,13 @@ def executar_robo():
                 print(f"   📥 Baixando: {item['nome']}")
                 try:
                     content = requests.get(item['url'], headers=headers).content
-                    # Backup Individual
                     upload_arquivo_drive(drive_service, item['nome'], content, config['pasta_destino'])
-                    # Adicionar ao Merge
                     merger.append(PdfReader(io.BytesIO(content)))
-                    # Preparar Log
                     registros_log_geral.append([datetime.now().strftime("%d/%m/%Y %H:%M"), item['nome'], nome_unificado])
                     set_ja_processados.add(item['nome'])
                     sucesso_no_lote += 1
                 except Exception as e: print(f"   ❌ Erro: {e}")
 
-            # Finalizar Lote (Merge)
             if sucesso_no_lote > 0 and not SIMULACAO:
                 buffer = io.BytesIO()
                 merger.write(buffer)
@@ -156,7 +150,6 @@ def executar_robo():
                 nomes_unificados_geral.append([nome_unificado])
                 print(f"   💾 {nome_unificado} salvo com sucesso.")
 
-    # 5. Atualizar Planilha no final de tudo
     if not SIMULACAO and registros_log_geral:
         print("\n📝 Atualizando planilha geral...")
         ws_log.append_rows(registros_log_geral)
