@@ -1,6 +1,3 @@
-# Passo 0: Instalar bibliotecas
-!pip install requests beautifulsoup4 google-api-python-client google-auth-httplib2 google-auth-oauthlib gspread PyPDF2 -q
-
 import requests
 from bs4 import BeautifulSoup
 import io
