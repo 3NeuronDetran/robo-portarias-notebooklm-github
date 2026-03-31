@@ -1,12 +1,8 @@
 name: Robô do Detran - Quinzenal
 
-# Define quando o robô vai rodar
 on:
   schedule:
-    # Roda às 08:00 (UTC) todo dia 1 e 15 do mês (Isso dá a quinzena perfeita)
     - cron: '0 8 1,15 * *'
-  
-  # Permite que você dê o "Play" manualmente clicando em um botão no GitHub se precisar!
   workflow_dispatch: 
 
 jobs:
@@ -15,10 +11,10 @@ jobs:
     
     steps:
       - name: Baixar os arquivos do repositório
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4  # <-- Atualizado para v4
         
       - name: Instalar Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5  # <-- Atualizado para v5
         with:
           python-version: '3.10'
           
@@ -27,6 +23,5 @@ jobs:
         
       - name: Rodar o Robô (A Mágica!)
         env:
-          # Aqui ele pega o cofre que você criou lá atrás
           GCP_CREDENTIALS: ${{ secrets.GCP_CREDENTIALS }}
         run: python main.py
