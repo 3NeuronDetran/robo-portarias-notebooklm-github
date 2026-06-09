@@ -1,5 +1,6 @@
 import os
 import json
+import sys  # 🔧 para encerrar com erro (exit != 0) quando algo falhar
 import requests
 from bs4 import BeautifulSoup
 import io
@@ -20,6 +21,7 @@ TAMANHO_DO_GRUPO = 20
 SIMULACAO = False
 
 # ================= CARDÁPIO DE ANOS =================
+# IDs confirmados (iguais antes/depois da migração para o Shared Drive).
 CONFIGS_ANOS = [
     {
         "ano": "2026",
@@ -48,12 +50,12 @@ CONFIGS_ANOS = [
 def autenticar_servicos():
     print("🔐 Autenticando com Conta de Serviço via GitHub Secrets...")
     credenciais_json = json.loads(os.environ['GCP_CREDENTIALS'])
-    
+
     escopos = [
         'https://www.googleapis.com/auth/drive',
         'https://www.googleapis.com/auth/spreadsheets'
     ]
-    
+
     creds = service_account.Credentials.from_service_account_info(credenciais_json, scopes=escopos)
     drive_service = build('drive', 'v3', credentials=creds)
     gc = gspread.authorize(creds)
@@ -62,24 +64,41 @@ def autenticar_servicos():
 def mover_para_arquivo_morto(service, origem_id, destino_id):
     print(f"📦 Arquivando lotes antigos...")
     query = f"'{origem_id}' in parents and trashed = false"
-    results = service.files().list(q=query, fields="files(id, name, parents)").execute()
+    # 🔧 supportsAllDrives + includeItemsFromAllDrives: necessários em Shared Drive
+    results = service.files().list(
+        q=query,
+        fields="files(id, name, parents)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
+    ).execute()
     arquivos = results.get('files', [])
     for arq in arquivos:
         try:
             previous_parents = ",".join(arq.get('parents'))
-            service.files().update(fileId=arq['id'], addParents=destino_id, removeParents=previous_parents).execute()
+            service.files().update(
+                fileId=arq['id'],
+                addParents=destino_id,
+                removeParents=previous_parents,
+                supportsAllDrives=True  # 🔧
+            ).execute()
             print(f"   [OK] Movido: {arq['name']}")
         except: pass
 
 def upload_arquivo_drive(service, nome_arquivo, conteudo_bytes, folder_id):
     metadata = {'name': nome_arquivo, 'parents': [folder_id]}
     media = MediaIoBaseUpload(io.BytesIO(conteudo_bytes), mimetype='application/pdf')
-    arquivo = service.files().create(body=metadata, media_body=media, fields='id').execute()
+    # 🔧 supportsAllDrives=True: sem isso o upload para Shared Drive dá 403/404
+    arquivo = service.files().create(
+        body=metadata,
+        media_body=media,
+        fields='id',
+        supportsAllDrives=True
+    ).execute()
     return arquivo.get('id')
 
 def executar_robo():
     drive_service, gc = autenticar_servicos()
-    
+
     try:
         sh = gc.open_by_url(URL_PLANILHA)
         ws_controle = sh.worksheet(NOME_ABA_CONTROLE)
@@ -89,18 +108,20 @@ def executar_robo():
 
     log_baixados = ws_log.col_values(2)[1:]
     set_ja_processados = set(log_baixados)
-    
+
     registros_log_geral = []
     nomes_unificados_geral = []
     headers = {'User-Agent': 'Mozilla/5.0'}
+
+    total_falhas = 0  # 🔧 conta erros de download/upload para falhar no final
 
     for config in CONFIGS_ANOS:
         print(f"\n==================================================")
         print(f"🌍 Escaneando site do ano: {config['ano']} por novidades...")
         print(f"==================================================")
-        
+
         novos_para_baixar = []
-        
+
         try:
             res = requests.get(config['url'], headers=headers, timeout=30)
             soup = BeautifulSoup(res.text, 'html.parser')
@@ -115,7 +136,7 @@ def executar_robo():
             continue
 
         print(f"📊 Encontrados {len(novos_para_baixar)} novos arquivos em {config['ano']}.")
-        
+
         if not novos_para_baixar:
             continue
 
@@ -135,13 +156,23 @@ def executar_robo():
             for item in lote:
                 print(f"   📥 Baixando: {item['nome']}")
                 try:
-                    content = requests.get(item['url'], headers=headers).content
+                    # 🔧 timeout + raise_for_status + pula arquivos vazios
+                    #    (resolve os "Cannot read an empty file" que apareciam no log)
+                    resp = requests.get(item['url'], headers=headers, timeout=60)
+                    resp.raise_for_status()
+                    content = resp.content
+                    if not content:
+                        print(f"   ⚠️ Arquivo vazio no site, pulando: {item['nome']}")
+                        continue
+
                     upload_arquivo_drive(drive_service, item['nome'], content, config['pasta_destino'])
                     merger.append(PdfReader(io.BytesIO(content)))
                     registros_log_geral.append([datetime.now().strftime("%d/%m/%Y %H:%M"), item['nome'], nome_unificado])
                     set_ja_processados.add(item['nome'])
                     sucesso_no_lote += 1
-                except Exception as e: print(f"   ❌ Erro: {e}")
+                except Exception as e:
+                    total_falhas += 1  # 🔧
+                    print(f"   ❌ Erro: {e}")
 
             if sucesso_no_lote > 0 and not SIMULACAO:
                 buffer = io.BytesIO()
@@ -158,6 +189,12 @@ def executar_robo():
         print("✅ Tudo pronto!")
     else:
         print("\n✅ Verificação finalizada sem novas alterações.")
+
+    # 🔧 Se houve qualquer falha de upload/download, encerra com erro para o
+    #    GitHub Actions ficar VERMELHO em vez de dar "sucesso" mentiroso.
+    if total_falhas > 0:
+        print(f"\n⛔ {total_falhas} arquivo(s) falharam. Encerrando com erro.")
+        sys.exit(1)
 
 if __name__ == "__main__":
     executar_robo()
