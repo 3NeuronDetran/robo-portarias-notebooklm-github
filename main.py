@@ -156,9 +156,14 @@ def executar_robo():
             for item in lote:
                 print(f"   📥 Baixando: {item['nome']}")
                 try:
+                    # 🔧 '#' no nome do arquivo quebra a URL (o '#' vira fragmento e o
+                    #    servidor recebe um caminho truncado → 404). Encoda só o '#' para
+                    #    %23 na hora de baixar; o nome continua legível no Drive/planilha.
+                    url_download = item['url'].replace('#', '%23')
+
                     # 🔧 timeout + raise_for_status + pula arquivos vazios
                     #    (resolve os "Cannot read an empty file" que apareciam no log)
-                    resp = requests.get(item['url'], headers=headers, timeout=60)
+                    resp = requests.get(url_download, headers=headers, timeout=60)
                     resp.raise_for_status()
                     content = resp.content
                     if not content:
